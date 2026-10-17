@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && ng-packagr -p lib/ng-package.json -c tsconfig.lib.json",
-    "build:22.1": "rm -rf dist && node node_modules/ng-packagr-22.1/src/cli/main.js -p lib/ng-package.json -c tsconfig.lib.json",
+    "build": "rm -rf dist && ng-packagr -p lib/ng-package.json -c tsconfig.json",
+    "build:22.1": "rm -rf dist && node node_modules/ng-packagr-22.1/src/cli/main.js -p lib/ng-package.json -c tsconfig.json",
     "check": "node check.mjs",
-    "compare": "npm run build:22.1 && node check.mjs ng-packagr@22.1.1; npm run build && node check.mjs ng-packagr@22.2.4"
+    "compare": "npm run build:22.1 && npm run check -- ng-packagr@22.1.1; npm run build && npm run check -- ng-packagr@22.2.4"
   },
   "devDependencies": {
     "@angular/compiler": "22.2.3",

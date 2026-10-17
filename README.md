@@ -1,13 +1,13 @@
-# ng-packagr 22.2 regressions: root source map and `@packageDocumentation`
+# ng-packagr 22.2: missing root source map and `@packageDocumentation`
 
 Minimal reproduction for [ng-packagr#3465](https://github.com/ng-packagr/ng-packagr/issues/3465).
 
-ng-packagr 22.2 replaced rollup and rollup-plugin-dts with rolldown and rolldown-plugin-dts for the FESM and `.d.ts` bundles. Two things in the published output changed between 22.1.1 and 22.2.4:
+Since 22.2, ng-packagr bundles with rolldown and rolldown-plugin-dts instead of rollup and rollup-plugin-dts ([#3360](https://github.com/ng-packagr/ng-packagr/pull/3360)). Compared with 22.1.1, two things changed in the build output:
 
 1. An entry point that only re-exports gets no `.mjs.map` and no `sourceMappingURL`.
-2. A `@packageDocumentation` comment above an `import` disappears from the bundled `.d.ts`.
+2. A `@packageDocumentation` comment above an `import` is missing from the bundled `.d.ts`.
 
-Both trace back to the new bundlers, not to ng-packagr's own code. Details are below.
+Neither one breaks anything at runtime. They show up as unexplained changes in the published tarball. Both come from the new bundlers, not from ng-packagr's own code.
 
 ## Run it
 
@@ -16,108 +16,63 @@ npm install
 npm run compare
 ```
 
-`compare` builds `lib/` with ng-packagr 22.1.1 and then with 22.2.4, and checks the output after each build:
+`compare` builds `lib/` with ng-packagr 22.1.1, then with 22.2.4, and checks each output:
 
 ```text
 ng-packagr@22.1.1 output:
 PASS  root fesm2022/repro-lib.mjs.map exists
-PASS  root fesm2022/repro-lib.mjs has a sourceMappingURL
 PASS  secondary fesm2022/repro-lib-core.mjs.map exists
 PASS  types/repro-lib-core.d.ts keeps @packageDocumentation
 
 ng-packagr@22.2.4 output:
 FAIL  root fesm2022/repro-lib.mjs.map exists
-FAIL  root fesm2022/repro-lib.mjs has a sourceMappingURL
 PASS  secondary fesm2022/repro-lib-core.mjs.map exists
 FAIL  types/repro-lib-core.d.ts keeps @packageDocumentation
 ```
 
-Two scripts reproduce each problem without ng-packagr:
+`lib/index.ts` only re-exports `greet` from the secondary entry point `repro-lib/core`. `lib/core/index.ts` starts with a `@packageDocumentation` comment, then an `import`, then its exports.
 
-```sh
-node rolldown-only.mjs   # source map
-node dts-only.mjs        # @packageDocumentation
-```
+## 1. No source map for an entry point without its own code
 
-## The package
+With 22.2.4, `fesm2022/repro-lib.mjs` is the single line `export { greet } from "repro-lib/core";`, with no map. Add one line of code to `lib/index.ts`, such as `export const VERSION = '0.0.0';`, and the map comes back.
 
-`lib/` has one primary and one secondary entry point:
-
-| File | Content |
-|---|---|
-| `lib/index.ts` | `export { greet } from 'repro-lib/core';` and nothing else |
-| `lib/core/index.ts` | a `@packageDocumentation` comment, then `import { greet } from './greet'`, then `export { greet }` and `export const GREETERS` |
-| `lib/core/greet.ts` | the `greet` function |
-
-## 1. The root entry point loses its source map
-
-### What happens
-
-With 22.2.4, `fesm2022/repro-lib.mjs` contains a single line, `export { greet } from "repro-lib/core";`. There is no `repro-lib.mjs.map` and no `//# sourceMappingURL` comment. The secondary entry point still gets its map.
-
-### When it happens
-
-The entry chunk has no code of its own. That is the case when the entry file only re-exports from modules the bundler treats as external, such as a sibling entry point of the same package. Add one line of own code to `lib/index.ts`, for example `export const VERSION = '0.0.0';`, and the map comes back.
-
-### Cause
-
-ng-packagr asks for a map and writes whatever rolldown returns:
-
-- [`write-bundles.transform.ts:102`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/ng-package/entry-point/write-bundles.transform.ts#L102) passes `sourcemap: true` for the FESM bundle.
-- [`rolldown.ts:75-83`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/flatten/rolldown.ts#L75-L83) passes it on to `bundle.write()`.
-
-For a chunk with no own code, rolldown 1.2.14 returns `chunk.map === null` and writes neither the map nor the `sourceMappingURL` comment. rollup 4.64.7, which ng-packagr 22.1.1 used, writes a map for the same input. `rolldown-only.mjs` shows the difference with rolldown alone:
+ng-packagr requests a map ([`write-bundles.transform.ts#L102`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/ng-package/entry-point/write-bundles.transform.ts#L102)) and writes what rolldown returns ([`rolldown.ts#L75-L83`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/flatten/rolldown.ts#L75-L83)). For a chunk without its own code, rolldown 1.2.14 returns `chunk.map === null`. rollup 4.64.7 writes a map for the same input. `node rolldown-only.mjs` shows this without ng-packagr:
 
 ```text
 reexport-only: reexport-only.js
 with-own-code: with-own-code.js, with-own-code.js.map
 ```
 
-### Impact
+The 22.1.1 map only pointed at comment lines, so no debugging information is lost. Only tools that expect a `.map` next to every `.mjs` notice the difference.
 
-The old map pointed only at comment lines (`index.ts` and the generated `repro-lib.ts` bundle index), because the chunk has no executable code. Debugging loses nothing. Tools that expect a `.map` next to every `.mjs` notice the gap, such as tarball manifests or source map upload steps.
+Possible fixes, from most to least general:
 
-### Possible fixes
+- rolldown writes a map for such chunks when `sourcemap` is on, as rollup does.
+- ng-packagr writes an empty map when it requested one and rolldown returned `null`.
+- The library gives the entry point one line of its own code.
 
-- **In rolldown.** Emit a map for a chunk without own code when `sourcemap` is on, as rollup does. That fixes it for every rolldown user.
-- **In ng-packagr.** In `rolldownBundleFile`, when `opts.sourcemap` is set and an entry chunk comes back with `map === null`, write a map with empty `mappings` and append the `sourceMappingURL` comment.
-- **In the library.** Give the entry point one line of its own code.
+## 2. `@packageDocumentation` above an `import` is dropped
 
-## 2. `@packageDocumentation` disappears from the bundled `.d.ts`
-
-### What happens
-
-With 22.2.4, `types/repro-lib-core.d.ts` no longer contains the module comment from `lib/core/index.ts`.
-
-### When it happens
-
-The comment sits directly above an `import`, which is the usual spot at the top of an `index.ts`. TypeScript keeps it there in the emitted `.d.ts`. If a declaration follows the comment directly, rolldown-plugin-dts keeps it.
-
-22.1.1 did not keep the comment in every case either. When the entry file only re-exports, with no declaration of its own, 22.1.1 drops it too. That is why `lib/core/index.ts` declares `GREETERS`.
-
-### Cause
-
-rolldown-plugin-dts turns every `.d.ts` into JavaScript, bundles it, and turns the result back into declarations. When it renders the module, it drops statements it does not need, such as the `import`, and with them their comments. Of a dropped statement's comments, it keeps only `#region`-style pragmas:
-
-- [`src/fake-js/index.ts:538-551`](https://github.com/sxzz/rolldown-plugin-dts/blob/v0.28.8/src/fake-js/index.ts#L538-L551) collects `danglingComments` from dropped statements.
-- [`src/fake-js/utils.ts:94`](https://github.com/sxzz/rolldown-plugin-dts/blob/v0.28.8/src/fake-js/utils.ts#L94) `pragmaComments()` keeps only comments that start with `#`.
-
-ng-packagr does ask rolldown to keep JSDoc in `.d.ts` output ([`rolldown.ts:87`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/flatten/rolldown.ts#L87), `jsdoc: dtsMode`), but the plugin has already removed the comment by then. rolldown on its own keeps the same comment in a `.js` bundle. `dts-only.mjs` runs the plugin with ng-packagr's options:
+With 22.2.4, `types/repro-lib-core.d.ts` no longer contains the module comment. TypeScript keeps the comment above the `import` in the emitted `.d.ts`. rolldown-plugin-dts then drops the `import`, and of a dropped statement's comments it keeps only `#region`-style ones ([`src/fake-js/index.ts#L538-L551`](https://github.com/sxzz/rolldown-plugin-dts/blob/v0.28.8/src/fake-js/index.ts#L538-L551), [`src/fake-js/utils.ts#L94`](https://github.com/sxzz/rolldown-plugin-dts/blob/v0.28.8/src/fake-js/utils.ts#L94)). ng-packagr asks rolldown to keep JSDoc in `.d.ts` output ([`rolldown.ts#L87`](https://github.com/ng-packagr/ng-packagr/blob/22.2.4/src/lib/flatten/rolldown.ts#L87)), but the plugin has already removed the comment by then. `node dts-only.mjs` runs the plugin with ng-packagr's options:
 
 ```text
 comment-above-import: @packageDocumentation dropped
 comment-above-declaration: @packageDocumentation kept
 ```
 
-### Impact
+22.1.1 kept the comment only when the entry file declares something itself, which is why `lib/core/index.ts` exports `GREETERS`. Even then the comment landed mid-file, above that declaration, so tools that read only a file's first comment never saw it.
 
-The comment is only documentation. Even in 22.1.1 it ended up in the middle of the bundled file, above the entry's own declarations, not at the top. Tools that read only a file's first comment did not see it in either version.
+Possible fixes:
 
-### Possible fixes
+- rolldown-plugin-dts keeps leading JSDoc of dropped statements, as it already does for `#region` comments.
+- The library puts a declaration directly below the comment, before any `import`. Tested with 22.2.4.
 
-- **In rolldown-plugin-dts.** Carry leading JSDoc comments of dropped statements into `danglingComments`, as it already does for pragmas. It could limit this to comments tagged `@packageDocumentation`, `@module` or `@file`.
-- **In the library.** Put a declaration directly below the comment, before any `import`. The comment then attaches to that declaration, so an editor may show it on hover for that symbol.
+## Related ng-packagr changes
 
-## Not covered
-
-The bundled `.d.ts` files from 22.2.4 also contain more non-exported declarations than before. The public export lists are identical, so this reproduction leaves that out.
+| PR or issue | Change |
+|---|---|
+| [#3360](https://github.com/ng-packagr/ng-packagr/pull/3360) | Replaces rollup with rolldown. Both changes start here. |
+| [#3361](https://github.com/ng-packagr/ng-packagr/pull/3361) | Uses the `oxc` generator for `.d.ts` bundling. The comment is dropped with the default generator too. |
+| [#3413](https://github.com/ng-packagr/ng-packagr/pull/3413) | Sets `dtsInput: true` and `tsconfig: false` on rolldown-plugin-dts. |
+| [#3347](https://github.com/ng-packagr/ng-packagr/issues/3347) | Asked to strip JSDoc from `.mjs` files. That change is intentional and unrelated to the `.d.ts` comment. |
+| [#3268](https://github.com/ng-packagr/ng-packagr/issues/3268) | Earlier proposal for rolldown-plugin-dts. It listed open plugin bugs, including a JSDoc one. |

@@ -10,5 +10,7 @@
     "skipLibCheck": true,
     "lib": ["ES2022", "dom"],
     "types": []
-  }
+  },
+  "include": ["lib/**/*.ts"],
+  "angularCompilerOptions": { "compilationMode": "partial" }
 }

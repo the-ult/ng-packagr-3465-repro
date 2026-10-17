@@ -10,5 +10,5 @@ import { greet } from './greet';
 
 export { greet };
 
-/** A declaration in the entry file itself, so the module comment has something to sit above. */
+// 22.1 keeps the module comment only when the entry file declares something itself.
 export const GREETERS = [greet] as const;
